@@ -1,0 +1,27 @@
+{
+  "upstream": {
+    "repository": "https://github.com/ophub/amlogic-s9xxx-armbian.git",
+    "commit": "7c3d671d11063fe9d2a40fe91bbd2dc5aa01e8ea"
+  },
+  "board": "wxy-oect",
+  "release": "trixie",
+  "kernel_series": "6.12",
+  "protected_files": {
+    "build-armbian/armbian-files/common-files/etc/model_database.conf": {
+      "original": "eb875f747f30dee9a22490deaad2de35ef8161e5e87deb0824a4a60c847ef561",
+      "patched": "f39bcc47e986418a369de0eab57ef3da0090112ea6614eb7b4eb248dbad0d3f1"
+    },
+    "rebuild": {
+      "original": "a0073b5ab04b9011830a571cec11d0843617c80fe9cb09e8a51fe141ce382177",
+      "patched": "63a0b0eadbe4c502f2a6ddfac4cb6ee510361182671ef17b16927f7cdefe7ba7"
+    },
+    "userpatches/oect-privacy.py": {
+      "original": null,
+      "patched": "de46daea7ff63a7e773e346f026e0b34488168e517b92e7386a76aaa60a7d4be"
+    },
+    "userpatches/oect-privacy-test.py": {
+      "original": null,
+      "patched": "2efc38a4aca15cf37a2244d713ee08c37aabf6ac926be3467f3c99ab6a3aafd7"
+    }
+  }
+}

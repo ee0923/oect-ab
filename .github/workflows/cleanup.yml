@@ -1,0 +1,84 @@
+name: Clean OECT build history
+
+on:
+  workflow_run:
+    workflows: [Build OECT Armbian]
+    types: [completed]
+
+permissions: {}
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - name: Wait for the retention period
+        env:
+          CLEANUP_DELAY: ${{ github.event.workflow_run.conclusion == 'success' && '60' || '1200' }}
+        run: sleep "$CLEANUP_DELAY"
+      - name: Remove eligible build and cleanup runs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          candidates="$RUNNER_TEMP/completed-runs.txt"
+          : > "$candidates"
+          # Collect every page before deleting anything, so pagination cannot skip runs.
+          for workflow in build.yml cleanup.yml; do
+            gh api --paginate "repos/$GH_REPO/actions/workflows/$workflow/runs?status=completed&per_page=100" \
+              --jq '.workflow_runs[] |
+                select((.updated_at | fromdateiso8601) <= (now - (if .conclusion == "success" then 60 else 1200 end))) |
+                [.id, .run_attempt, .conclusion, .path] | @tsv' >> "$candidates"
+          done
+          while IFS=$'\t' read -r id attempt conclusion path; do
+            [[ "$id" =~ ^[1-9][0-9]*$ && "$attempt" =~ ^[1-9][0-9]*$ ]] || exit 2
+            [[ "$id" != "$GITHUB_RUN_ID" ]] || continue
+            # Recheck in case someone reran a candidate after it was listed.
+            if ! current="$(gh api "repos/$GH_REPO/actions/runs/$id" 2>&1)"; then
+              [[ "$current" == *"(HTTP 404)"* ]] && continue
+              printf '%s\n' "$current" >&2
+              exit 1
+            fi
+            if ! jq -e --argjson attempt "$attempt" --arg conclusion "$conclusion" --arg path "$path" '
+              .status == "completed" and .run_attempt == $attempt and
+              .conclusion == $conclusion and .path == $path and
+              ((.updated_at | fromdateiso8601) <= (now - (if .conclusion == "success" then 60 else 1200 end)))
+            ' <<< "$current" >/dev/null; then
+              continue
+            fi
+            case "$path" in
+              .github/workflows/build.yml)
+                if [[ "$conclusion" == success ]]; then
+                  if ! release="$(gh api "repos/$GH_REPO/releases/tags/build-$id-$attempt" 2>&1)"; then
+                    [[ "$release" == *"(HTTP 404)"* ]] && continue
+                    printf '%s\n' "$release" >&2
+                    exit 1
+                  fi
+                  if ! jq -e '
+                    .draft == false and
+                    (.assets | length == 9 or length == 10) and
+                    all(.assets[]; .state == "uploaded" and .size > 0) and
+                    ([.assets[].name | select(test("^Armbian_[A-Za-z0-9._+-]+_rockchip_wxy-oect_(bookworm|trixie)_6\\.12\\.[0-9]+_server_[0-9.]+\\.img\\.gz$"))] | length == 1) and
+                    (([.assets[].name | select(endswith(".img.gz") | not)] | sort) ==
+                      ((["SHA256SUMS", "base-input.json", "build-record.json", "build.json", "build.log", "customize.sha256", "hardware-inputs.sha256", "sources.lock.json"] +
+                        (if any(.assets[]; .name == "privacy-audit.json") then ["privacy-audit.json"] else [] end)) | sort))
+                  ' <<< "$release" >/dev/null; then
+                    echo "Keep build $id: release is incomplete"
+                    continue
+                  fi
+                fi
+                ;;
+              .github/workflows/cleanup.yml) ;;
+              *) exit 2 ;;
+            esac
+            if ! result="$(gh api --method DELETE "repos/$GH_REPO/actions/runs/$id" 2>&1)"; then
+              [[ "$result" == *"(HTTP 404)"* ]] && continue
+              printf '%s\n' "$result" >&2
+              exit 1
+            fi
+            echo "Deleted $path run $id ($conclusion)"
+          done < "$candidates"
