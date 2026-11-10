@@ -1,0 +1,15 @@
+{
+  "upstream": {
+    "repository": "https://github.com/ophub/amlogic-s9xxx-armbian.git",
+    "commit": "7c3d671d11063fe9d2a40fe91bbd2dc5aa01e8ea"
+  },
+  "board": "wxy-oect",
+  "release": "bookworm",
+  "kernel_series": "6.12",
+  "protected_files": {
+    "build-armbian/armbian-files/common-files/etc/model_database.conf": {
+      "original": "eb875f747f30dee9a22490deaad2de35ef8161e5e87deb0824a4a60c847ef561",
+      "patched": "f39bcc47e986418a369de0eab57ef3da0090112ea6614eb7b4eb248dbad0d3f1"
+    }
+  }
+}
