@@ -1,0 +1,79 @@
+name: Clean OECT build history
+
+on:
+  workflow_run:
+    workflows: [Build OECT Armbian]
+    types: [completed]
+
+permissions: {}
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - name: Wait for the retention period
+        env:
+          CLEANUP_DELAY: ${{ github.event.workflow_run.conclusion == 'success' && '60' || '1200' }}
+        run: sleep "$CLEANUP_DELAY"
+      - name: Remove eligible build and cleanup runs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          candidates="$RUNNER_TEMP/completed-runs.txt"
+          : > "$candidates"
+          # Collect every page before deleting anything, so pagination cannot skip runs.
+          for workflow in build.yml cleanup.yml; do
+            gh api --paginate "repos/$GH_REPO/actions/workflows/$workflow/runs?status=completed&per_page=100" \
+              --jq '.workflow_runs[] |
+                select((.updated_at | fromdateiso8601) <= (now - (if .conclusion == "success" then 60 else 1200 end))) |
+                [.id, .run_attempt, .conclusion, .path] | @tsv' >> "$candidates"
+          done
+          while IFS=$'\t' read -r id attempt conclusion path; do
+            [[ "$id" =~ ^[1-9][0-9]*$ && "$attempt" =~ ^[1-9][0-9]*$ ]] || exit 2
+            [[ "$id" != "$GITHUB_RUN_ID" ]] || continue
+            # Recheck in case someone reran a candidate after it was listed.
+            if ! current="$(gh api "repos/$GH_REPO/actions/runs/$id" 2>&1)"; then
+              [[ "$current" == *"(HTTP 404)"* ]] && continue
+              printf '%s\n' "$current" >&2
+              exit 1
+            fi
+            if ! jq -e --argjson attempt "$attempt" --arg conclusion "$conclusion" --arg path "$path" '
+              .status == "completed" and .run_attempt == $attempt and
+              .conclusion == $conclusion and .path == $path and
+              ((.updated_at | fromdateiso8601) <= (now - (if .conclusion == "success" then 60 else 1200 end)))
+            ' <<< "$current" >/dev/null; then
+              continue
+            fi
+            case "$path" in
+              .github/workflows/build.yml)
+                if [[ "$conclusion" == success ]]; then
+                  # A version release may already belong to a newer patch build.
+                  # The exact attempt's successful release job proves this run was published.
+                  jobs="$(gh api --paginate --slurp "repos/$GH_REPO/actions/runs/$id/attempts/$attempt/jobs?per_page=100")"
+                  if ! jq -e --arg sha "$(jq -r .head_sha <<< "$current")" '
+                    [.[].jobs[] | select(.name == "release")] as $jobs |
+                    ($jobs | length == 1) and
+                    ($jobs[0].head_sha == $sha and $jobs[0].status == "completed" and
+                     $jobs[0].conclusion == "success")
+                  ' <<< "$jobs" >/dev/null; then
+                    echo "Keep build $id: no successful publication job for this attempt"
+                    continue
+                  fi
+                fi
+                ;;
+              .github/workflows/cleanup.yml) ;;
+              *) exit 2 ;;
+            esac
+            if ! result="$(gh api --method DELETE "repos/$GH_REPO/actions/runs/$id" 2>&1)"; then
+              [[ "$result" == *"(HTTP 404)"* ]] && continue
+              printf '%s\n' "$result" >&2
+              exit 1
+            fi
+            echo "Deleted $path run $id ($conclusion)"
+          done < "$candidates"
